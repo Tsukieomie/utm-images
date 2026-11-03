@@ -1,0 +1,58 @@
+name: Build Debian 13 ARM64 bundle
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'debian-13/**'
+      - '.github/workflows/build-debian-13.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download official Debian 13 nocloud arm64 image
+        run: |
+          set -euo pipefail
+          BASE=https://cloud.debian.org/images/cloud/trixie/latest
+          curl -fsSL -o debian-13-nocloud-arm64.qcow2 "$BASE/debian-13-nocloud-arm64.qcow2"
+          curl -fsSL -o SHA512SUMS "$BASE/SHA512SUMS"
+          grep ' debian-13-nocloud-arm64.qcow2$' SHA512SUMS | sha512sum -c -
+
+      - name: Assemble .utm bundle
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq && sudo apt-get install -y -qq qemu-utils zip >/dev/null
+          qemu-img info debian-13-nocloud-arm64.qcow2
+          mkdir -p "Debian 13.utm/Data"
+          cp debian-13/config.plist "Debian 13.utm/config.plist"
+          cp debian-13-nocloud-arm64.qcow2 "Debian 13.utm/Data/debian-13-arm64.qcow2"
+          zip -r -9 debian-13-arm64-utm.zip "Debian 13.utm"
+          sha256sum debian-13-arm64-utm.zip | tee debian-13-arm64-utm.zip.sha256
+
+      - name: Publish release asset
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          TAG=debian-13-arm64
+          URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/debian-13-arm64-utm.zip"
+          NOTES="Console-only Debian 13 (trixie) ARM64 bundle for UTM / UTM SE on iPhone and iPad. Boots straight to a root prompt (user root, no password); run passwd first.
+
+One-tap import on iPhone (open in Safari): utm://downloadVM?url=${URL}
+
+Plain download: ${URL}
+
+SHA-256 (zip): $(cut -d' ' -f1 debian-13-arm64-utm.zip.sha256)
+Source image: https://cloud.debian.org/images/cloud/trixie/latest/debian-13-nocloud-arm64.qcow2 (SHA-512 verified during build)"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release edit "$TAG" --title "Debian 13 (trixie) ARM64 for UTM" --notes "$NOTES"
+          else
+            gh release create "$TAG" --title "Debian 13 (trixie) ARM64 for UTM" --notes "$NOTES"
+          fi
+          gh release upload "$TAG" debian-13-arm64-utm.zip debian-13-arm64-utm.zip.sha256 --clobber
